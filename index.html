@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sky Runner — Flying Game</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a0a1a;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    color: #fff;
+    overflow: hidden;
+  }
+  h1 {
+    font-size: 1.4rem;
+    margin-bottom: 0.5rem;
+    color: #38bdf8;
+    text-shadow: 0 0 20px rgba(56,189,248,0.4);
+  }
+  #hud {
+    display: flex;
+    gap: 2rem;
+    margin-bottom: 0.5rem;
+    font-size: 1rem;
+  }
+  #hud span { color: #94a3b8; }
+  #hud strong { color: #38bdf8; }
+  canvas {
+    border: 1px solid #1e293b;
+    border-radius: 8px;
+    display: block;
+  }
+  #overlay {
+    position: absolute;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+  }
+  #overlay.active { pointer-events: all; }
+  #overlay .msg {
+    font-size: 1.5rem;
+    font-weight: 700;
+    margin-bottom: 0.5rem;
+  }
+  #overlay .sub {
+    font-size: 0.95rem;
+    color: #94a3b8;
+  }
+  #overlay .sub kbd {
+    background: #1e293b;
+    padding: 0.15rem 0.5rem;
+    border-radius: 4px;
+    font-family: inherit;
+  }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+  <h1>Sky Runner</h1>
+  <div id="hud">
+    <span>Score: <strong id="score">0</strong></span>
+    <span>Best: <strong id="best">0</strong></span>
+  </div>
+  <canvas id="game" width="480" height="640"></canvas>
+  <div id="overlay" class="active">
+    <div class="msg" id="overlayMsg">Sky Runner</div>
+    <div class="sub">Press <kbd>Space</kbd> or tap to start</div>
+  </div>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const scoreEl = document.getElementById('score');
+const bestEl = document.getElementById('best');
+const overlay = document.getElementById('overlay');
+const overlayMsg = document.getElementById('overlayMsg');
+const W = canvas.width, H = canvas.height;
+
+let state = 'idle'; // idle | playing | dead
+let score = 0, best = 0, speed = 3, frame = 0;
+let clouds = [], stars = [], obstacles = [], particles = [];
+
+// Player
+const plane = { x: 120, y: H / 2, vy: 0, w: 40, h: 24, trail: [] };
+
+function reset() {
+  score = 0; speed = 3; frame = 0;
+  plane.y = H / 2; plane.vy = 0; plane.trail = [];
+  clouds = []; obstacles = []; particles = [];
+  stars = Array.from({ length: 80 }, () => ({
+    x: Math.random() * W, y: Math.random() * H, s: Math.random() * 1.5 + 0.5
+  }));
+  for (let i = 0; i < 6; i++) spawnCloud(true);
+  scoreEl.textContent = 0;
+}
+
+function spawnCloud(init) {
+  clouds.push({
+    x: init ? Math.random() * W : W + 60,
+    y: Math.random() * H, w: 50 + Math.random() * 80,
+    speed: 0.5 + Math.random() * 1.5
+  });
+}
+
+function spawnObstacle() {
+  const h = 40 + Math.random() * 80;
+  const gap = 160;
+  const gapY = 60 + Math.random() * (H - 120 - gap);
+  obstacles.push({ x: W, gapY, gap, w: 40, passed: false });
+}
+
+function spawnParticle(x, y, color) {
+  for (let i = 0; i < 6; i++) {
+    particles.push({
+      x, y,
+      vx: (Math.random() - 0.5) * 4,
+      vy: (Math.random() - 0.5) * 4,
+      life: 20 + Math.random() * 20,
+      color
+    });
+  }
+}
+
+// Input
+const keys = {};
+let thrusting = false;
+
+document.addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (e.code === 'Space') { e.preventDefault(); handleAction(); }
+});
+document.addEventListener('keyup', e => keys[e.code] = false);
+canvas.addEventListener('pointerdown', handleAction);
+document.addEventListener('pointerdown', e => {
+  if (e.target === overlay || overlay.contains(e.target)) handleAction();
+});
+
+function handleAction() {
+  if (state === 'idle') { state = 'playing'; reset(); overlay.classList.add('hidden'); }
+  else if (state === 'dead' && frame > 30) {
+    state = 'playing'; reset(); overlay.classList.add('hidden');
+  }
+}
+
+function update() {
+  frame++;
+  thrusting = keys['ArrowUp'] || keys['KeyW'] || keys['Space'];
+
+  if (state === 'playing') {
+    // Physics
+    plane.vy += thrusting ? -0.35 : 0.25;
+    plane.vy *= 0.92;
+    plane.y += plane.vy;
+    plane.y = Math.max(20, Math.min(H - 20, plane.y));
+
+    // Trail
+    if (frame % 2 === 0) {
+      plane.trail.push({ x: plane.x - 20, y: plane.y + 3, life: 30 });
+      if (plane.trail.length > 30) plane.trail.shift();
+    }
+    plane.trail.forEach(t => t.life--);
+    plane.trail = plane.trail.filter(t => t.life > 0);
+
+    // Score
+    if (frame % 8 === 0) { score++; scoreEl.textContent = score; speed = 3 + score * 0.02; }
+
+    // Obstacles
+    if (frame % 90 === 0) spawnObstacle();
+    obstacles.forEach(o => {
+      o.x -= speed;
+      if (!o.passed && o.x + o.w < plane.x) { o.passed = true; }
+    });
+    obstacles = obstacles.filter(o => o.x > -o.w);
+
+    // Collision
+    for (const o of obstacles) {
+      const inX = plane.x + plane.w / 2 > o.x && plane.x - plane.w / 2 < o.x + o.w;
+      const inY = plane.y + plane.h / 2 > o.gapY + o.gap || plane.y - plane.h / 2 < o.gapY;
+      if (inX && inY) die();
+    }
+    if (plane.y < 0 || plane.y > H) die();
+
+    // Particles
+    if (frame % 3 === 0) {
+      particles.push({
+        x: plane.x - 20, y: plane.y + (Math.random() - 0.5) * 6,
+        vx: -1 - Math.random() * 2, vy: (Math.random() - 0.5) * 1.5,
+        life: 15 + Math.random() * 10, color: '#f97316'
+      });
+    }
+  }
+
+  // Stars
+  stars.forEach(s => {
+    s.x -= (state === 'playing' ? speed * 0.3 : 0.3);
+    if (s.x < 0) { s.x = W; s.y = Math.random() * H; }
+  });
+
+  // Clouds
+  clouds.forEach(c => { c.x -= c.speed + (state === 'playing' ? speed * 0.2 : 0); });
+  clouds = clouds.filter(c => c.x > -c.w - 20);
+  if (clouds.length < 8) spawnCloud(false);
+
+  // Particles
+  particles.forEach(p => { p.x += p.vx; p.y += p.vy; p.life--; });
+  particles = particles.filter(p => p.life > 0);
+}
+
+function die() {
+  state = 'dead'; frame = 0;
+  if (score > best) best = score;
+  bestEl.textContent = best;
+  spawnParticle(plane.x, plane.y, '#ef4444');
+  overlayMsg.textContent = 'Game Over';
+  overlay.querySelector('.sub').innerHTML = `Score: ${score} — Press <kbd>Space</kbd> to retry`;
+  overlay.classList.remove('hidden');
+}
+
+function draw() {
+  // Sky gradient
+  const grad = ctx.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0, '#0f172a');
+  grad.addColorStop(0.5, '#1e293b');
+  grad.addColorStop(1, '#334155');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+
+  // Stars
+  stars.forEach(s => {
+    ctx.fillStyle = `rgba(255,255,255,${0.3 + Math.sin(frame * 0.03 + s.x) * 0.2})`;
+    ctx.fillRect(s.x, s.y, s.s, s.s);
+  });
+
+  // Clouds
+  ctx.globalAlpha = 0.08;
+  clouds.forEach(c => {
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.ellipse(c.x, c.y, c.w / 2, c.w / 4, 0, 0, Math.PI * 2);
+    ctx.fill();
+  });
+  ctx.globalAlpha = 1;
+
+  // Obstacles
+  if (state === 'playing') {
+    obstacles.forEach(o => {
+      // Top pillar
+      const gTop = ctx.createLinearGradient(o.x, 0, o.x + o.w, 0);
+      gTop.addColorStop(0, '#22d3ee');
+      gTop.addColorStop(1, '#0891b2');
+      ctx.fillStyle = gTop;
+      ctx.fillRect(o.x, 0, o.w, o.gapY);
+      // Bottom pillar
+      ctx.fillRect(o.x, o.gapY + o.gap, o.w, H);
+      // Glow
+      ctx.shadowColor = '#22d3ee';
+      ctx.shadowBlur = 12;
+      ctx.fillRect(o.x, o.gapY - 4, o.w, 4);
+      ctx.fillRect(o.x, o.gapY + o.gap, o.w, 4);
+      ctx.shadowBlur = 0;
+    });
+  }
+
+  // Trail
+  plane.trail.forEach((t, i) => {
+    const a = t.life / 30;
+    ctx.fillStyle = `rgba(249,115,22,${a * 0.5})`;
+    ctx.beginPath();
+    ctx.arc(t.x, t.y, 3 * a + 1, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  // Plane
+  const px = plane.x, py = plane.y;
+  const tilt = Math.max(-0.4, Math.min(0.4, plane.vy * 0.05));
+  ctx.save();
+  ctx.translate(px, py);
+  ctx.rotate(tilt);
+  // Body
+  ctx.fillStyle = '#38bdf8';
+  ctx.beginPath();
+  ctx.moveTo(20, 0);
+  ctx.lineTo(-14, -10);
+  ctx.lineTo(-10, 0);
+  ctx.lineTo(-14, 10);
+  ctx.closePath();
+  ctx.fill();
+  // Wings
+  ctx.fillStyle = '#0ea5e9';
+  ctx.fillRect(-6, -14, 16, 5);
+  ctx.fillRect(-6, 9, 16, 5);
+  // Tail
+  ctx.fillStyle = '#f97316';
+  ctx.beginPath();
+  ctx.moveTo(-14, 0);
+  ctx.lineTo(-22, -6);
+  ctx.lineTo(-22, 6);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+
+  // Particles
+  particles.forEach(p => {
+    ctx.globalAlpha = p.life / 40;
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 2, 0, Math.PI * 2);
+    ctx.fill();
+  });
+  ctx.globalAlpha = 1;
+}
+
+function loop() {
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+reset();
+loop();
+</script>
+</body>
+</html>
